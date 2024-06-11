@@ -1,0 +1,337 @@
+---
+title: "STA_135_Final_Project"
+author: "Adam Hetherwick"
+date: "2024-06-05"
+output: html_document
+---
+
+## 
+
+```{r}
+library(HSAUR2)
+data(USairpollution)
+
+head(USairpollution)
+```
+
+## Data Description and Summary
+
+Goal: Want to see which predictors are the best at predicting degree of air pollution in a city as measure by the sulfur dioxide content in the air. Can also rank the performance of the cities.
+
+```{r}
+data <- USairpollution
+
+dim(data)
+```
+Ensuring normality of the predictors (qqplots and shapiro test) (2-3)
+
+```{r}
+normality_test_results <- lapply(data, shapiro.test)
+p_value <- sapply(normality_test_results, function(x) x$p.value)
+t(data.frame(
+  p_value
+))
+
+data_t = data
+data_t$SO2 = log(data$SO2)
+data_t$temp = log(data$temp)
+data_t$manu = log(data$manu)
+data_t$popul = log(data$popul)
+
+normality_test_results2 <- lapply(data_t, shapiro.test)
+p_value <- round(sapply(normality_test_results2, function(x) x$p.value), 4)
+t(data.frame(
+  p_value
+))
+```
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(psych)
+
+data_predictors <- data_t[1:41, 2:7]
+
+buckets <- ifelse(data_t$SO2 > median(data_t$SO2), 'high_pol', 'low_pol')
+buckets <- as.factor(buckets)
+data_buckets <- data_predictors
+data_buckets$buckets <- buckets
+
+pairs.panels(data_predictors,
+             gap = 0,
+             bg = c("red", "blue")[as.factor(buckets)],
+             pch = 21)
+
+ggplot(data_t, aes(x = SO2, y = rep('', 41))) +
+  geom_boxplot(width = 0.3) +
+  geom_boxplot() +
+  labs(title = "Sulfur Dioxide Distribution",
+       x = "",
+       y = "") + 
+  theme(
+    plot.margin = unit(c(1, 1, 1, 1), "cm"),  # Adjust plot margins
+    aspect.ratio = 0.2  # Adjust aspect ratio to make the plot skinnier
+  )
+```
+
+Covariance Matrices
+
+```{r}
+library(reshape2)
+library(scales)
+
+low_pol_data = data_buckets[data_buckets$buckets == 'low_pol', ]
+high_pol_data = data_buckets[data_buckets$buckets == 'high_pol', ]
+
+low_cov_matrix = round(cov(low_pol_data[, 1:6]), 2)
+high_cov_matrix = round(cov(high_pol_data[, 1:6]), 2)
+
+low_cov_matrix
+high_cov_matrix
+```
+Checking PSD of covariance matrices:
+
+```{r}
+is_positive_semidefinite <- function(matrix) {
+  eigenvalues <- eigen(matrix)$values
+  return(all(eigenvalues >= -1e-8))
+}
+
+is_psd_high <- is_positive_semidefinite(high_cov_matrix)
+is_psd_low <- is_positive_semidefinite(low_cov_matrix)
+
+print(paste("High pollution matrix is positive semidefinite:", is_psd_high))
+print(paste("Low pollution matrix is positive semidefinite:", is_psd_low))
+
+high_cov_eig = round(eigen(high_cov_matrix)$values, 4)
+low_cov_eig = round(eigen(low_cov_matrix)$values, 4)
+
+t(data.frame(
+  'High_Pollution_Covariance_Matrix_Eigenvalues' = high_cov_eig,
+  'Low_Pollution_Covariance_Matrix_Eigenvalues' = low_cov_eig
+))
+```
+
+Looking at predictors' relationship with the response.
+
+```{r}
+data_buckets_full <- data_t
+data_buckets_full$buckets <- ifelse(data$SO2 > median(data$SO2), 'high_pol', 'low_pol')
+
+melted_data <- melt(data_buckets_full, id.vars = c("SO2", "buckets"))
+
+ggplot(melted_data, aes(x = value, y = SO2, color = buckets)) +
+  geom_point() +
+  facet_wrap(~ variable, scales = "free") +
+  labs(title = "Predictors vs. SO2", 
+       x = "Predictor Value", y = "SO2", color = "Pollution Level") +
+  scale_color_manual(values = c("high_pol" = "red", "low_pol" = "blue"))
+```
+
+Checking the population covariance matrices (Box's M test 4-2)
+
+```{r}
+n1 = dim(low_pol_data)[1]
+n2 = dim(high_pol_data)[1]
+
+v1 = n1-1
+v2 = n2-1
+
+p = 6
+
+c1_num = (((1/v1) + (1/v2) - (1/(v1+v2))) * (2*p**2 + 3*p - 1))
+c1_den = 6*(p + 1)
+c1 = c1_num / c1_den
+
+s_x = cov(low_pol_data[, 1:6])
+s_y = cov(high_pol_data[, 1:6])
+s_p = (((n1-1)*s_x) + ((n2-1)*s_y)) / (n1 + n2 - 2)
+
+M_num = ((det(s_x)**(v1/2))*(det(s_y)**(v2/2)))
+M_den = (det(s_p)**((v1/2) + (v2/2)))
+M = M_num / M_den
+
+u1 = -2*(1-c1)*log(M)
+u1
+
+qchisq(0.95, 0.5*p*(p+1))
+```
+Reject the null if u1 > qchisq(0.95, 0.5p(p+1))
+
+Fitting Quadratic Discriminant Analysis to the data
+
+```{r}
+library(MASS)
+library(caret)
+
+data_t_full <- data_t
+data_t_full$buckets <- buckets
+
+qda_model <- qda(buckets ~ temp + manu + popul + wind + precip + predays, data = data_t_full)
+predictions <- predict(qda_model)$class
+
+qda_class_rate = sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+qda_class_rate
+
+confusionMatrix(predictions, as.factor(data_t_full$buckets))
+```
+
+Fitting a Linear Discriminant Analysis to each predictor
+
+```{r}
+lda_cols = colnames(data_t_full[, 2:7])
+lda_vars = c()
+lda_so2 = rep(data_t$SO2, 6)
+lda_rates = c()
+lda_values = c()
+lda_buckets = c()
+
+for (i in 2:7) {
+  lda_model <- lda(buckets ~ data_t[, i], data = data_t_full)
+  lda_predictions <- predict(lda_model)$class
+  class_rate = sum(lda_predictions == data_t_full$buckets)/length(data_t_full$buckets)
+  
+  lda_buckets = append(lda_buckets, lda_predictions)
+  lda_rates = append(lda_rates, class_rate)
+  lda_vars = append(lda_vars, rep(colnames(data_t_full)[i], dim(data_t_full)[1]))
+  lda_values = append(lda_values, data_t_full[, i])
+}
+
+data.frame('Predictor' = lda_cols,
+           'Classification Rate' = lda_rates)
+
+lda_melted_data <- data.frame(
+  "SO2" = lda_so2,
+  "buckets" = lda_buckets,
+  "variable" = lda_vars,
+  "value" = lda_values
+)
+
+ggplot(lda_melted_data, aes(x = value, y = SO2, color = buckets)) +
+  geom_point() +
+  facet_wrap(~ variable, scales = "free") +
+  labs(title = "Predictors vs. SO2", 
+       x = "Predictor Value", y = "SO2", color = "Pollution Level") +
+  scale_color_manual(values = c("high_pol" = "red", "low_pol" = "blue"))
+```
+
+Fitting LDA to whole dataset
+
+```{r}
+lda_model <- lda(buckets ~ temp + manu + popul + wind + precip + predays, data = data_t_full)
+predictions <- predict(lda_model)$class
+
+lda_class_rate = sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+lda_class_rate
+
+confusionMatrix(predictions, as.factor(data_t_full$buckets))
+```
+
+Running PCA on full data.
+
+```{r}
+cov_matrix = cov(data_t[, -1])
+ev = eigen(cov_matrix)$values
+eve = eigen((cov_matrix))$vectors
+l1 = eve[1:6, 1] %*% t(data_t[, -1])
+l2 = eve[1:6, 2] %*% t(data_t[, -1])
+plot(-l1[1,1:dim(data_t[, -1])[1]], l2[1, 1:dim(data_t[, -1])[1]])
+plot(sort(-l1[1, 1:dim(data_t[, -1])[1]]))
+
+total_var <- sum(ev)
+var_explained <- c()
+
+for (i in seq_len(length(ev))) {
+  var_explained = append(var_explained, round(sum(ev[1:i])/total_var, 6))
+}
+
+temp_df <- data.frame(x = 1:length(var_explained), y = var_explained)
+ggplot(temp_df, aes(x, y)) +
+  geom_point() +
+  geom_line(color = "red") +
+  geom_text(aes(label = y), vjust = -0.5, size = 3) +
+  labs(title = "Principal Component Variance Explained", 
+       x = "Eigenvalue", y = "Variance Explained") +
+  theme_minimal()
+
+pca_result <- prcomp(data_t[, -1], scale. = TRUE, center = TRUE, retx = TRUE)
+pca_scores <- pca_result$x[, 1:2]
+
+pca_df <- as.data.frame(pca_scores)
+names(pca_df) <- c("PC1", "PC2")
+
+merged_df <- cbind(pca_df, data_t_full$buckets)
+
+ggplot(merged_df, aes(x = PC1, y = PC2, color=buckets)) +
+  geom_point() +
+  labs(title = "PCA Scatter Plot", 
+       x = "Principal Component 1", y = "Principal Component 2", color = 'Polution Level') + 
+  theme_minimal() + 
+  scale_color_manual(values = c("high_pol" = "red", "low_pol" = "blue"))
+```
+
+Running QDA/LDA on PCA divided data
+
+```{r}
+pca_df$buckets <- data_t_full$buckets
+
+qda_model_pca <- qda(buckets ~ PC1 + PC2, data = pca_df)
+predictions <- predict(qda_model_pca)$class
+qda_class_rate = sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+confusionMatrix(predictions, as.factor(data_t_full$buckets))
+
+lda_model_pca <- lda(buckets ~ PC1 + PC2, data = pca_df)
+predictions <- predict(lda_model_pca)$class
+lda_class_rate = sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+confusionMatrix(predictions, as.factor(data_t_full$buckets))
+```
+
+Support Vector Machine model comparison
+
+```{r}
+library(e1071)
+
+data_scaled <- data_t_full[, -1]
+data_scaled[, 1:6] = scale(data_scaled[, 1:6])
+
+# Linear kernel
+svm_model <- svm(buckets ~ temp + manu + popul + wind + precip + predays, 
+                 data = data_scaled, type = 'C-classification', kernel = 'linear')
+predictions <- predict(svm_model, data_scaled)
+svm_class_rate_linear =  sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+svm_model
+
+# Radial kernel
+svm_model <- svm(buckets ~ temp + manu + popul + wind + precip + predays, 
+                 data = data_scaled, type = 'C-classification', kernel = 'radial')
+predictions <- predict(svm_model, data_scaled)
+svm_class_rate_radial =  sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+svm_model
+
+# polynomial kernel
+svm_model <- svm(buckets ~ temp + manu + popul + wind + precip + predays, 
+                 data = data_scaled, type = 'C-classification', kernel = 'poly')
+predictions <- predict(svm_model, data_scaled)
+svm_class_rate_poly =  sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+svm_model
+
+t(data.frame(
+  'Kernel_Method' = c("Linear", "Radial", "Polynomial"),
+  'Accuracy_Rate' = c(svm_class_rate_linear, svm_class_rate_radial, svm_class_rate_poly)
+))
+```
+
+Random Forest model comparison
+
+```{r}
+library(randomForest)
+
+rf_model <- randomForest(buckets ~ temp + manu + popul + wind + precip + predays, 
+                         data = data_scaled, ntree = 100)
+predictions <- predict(rf_model, data_scaled)
+rf_class_rate =  sum(predictions == data_t_full$buckets)/dim(data_t_full)[1]
+rf_class_rate
+confusionMatrix(predictions, data_t_full$buckets)
+```
+
+
